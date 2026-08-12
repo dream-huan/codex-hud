@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-x86-64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out codex-hud
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Reclaim runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          df -h .
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev python3
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: 1.95.0
+
+      - name: Install Node.js 22
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 22
+
+      - name: Validate scripts and renderer
+        run: |
+          sh -n bin/codex-hud scripts/*.sh
+          node --test renderer/statusline.test.mjs
+
+      - name: Prepare patched Codex source
+        run: ./scripts/prepare-upstream.sh
+
+      - name: Build and hash Linux sandbox
+        working-directory: .cache/codex/codex-rs
+        run: |
+          cargo build --target x86_64-unknown-linux-gnu --release --bin bwrap
+          bwrap_path="${GITHUB_WORKSPACE}/.cache/codex/codex-rs/target/x86_64-unknown-linux-gnu/release/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap_path"
+          echo "CODEX_BWRAP_SHA256=$(sha256sum "$bwrap_path" | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "CODEX_HUD_BWRAP_BIN=$bwrap_path" >> "$GITHUB_ENV"
+
+      - name: Build patched Codex package
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          CODEX_BUILD_JOBS: "4"
+          CODEX_HUD_SKIP_TESTS: "1"
+        run: ./scripts/build.sh
+
+      - name: Create release archive
+        env:
+          CODEX_HUD_VERSION: ${{ github.ref_name }}
+        run: ./scripts/package-release.sh
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/release/codex-hud-x86_64-unknown-linux-gnu.tar.gz \
+            dist/release/codex-hud-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            --verify-tag \
+            --generate-notes \
+            --title "codex-hud ${GITHUB_REF_NAME}"

@@ -15,11 +15,12 @@ const DEFAULT_CONFIG = {
     project: true,
     branch: true,
     reasoning: false,
+    taskProgress: true,
     tools: true,
     todo: true,
     limits: true,
     mode: true,
-    tokenBreakdown: false,
+    tokenBreakdown: true,
     resetTimes: true,
   },
   colors: {
@@ -141,6 +142,9 @@ function headerLine(snapshot, config, narrow) {
   if (!narrow && git.pullRequest?.number) parts.push(paint(`PR #${git.pullRequest.number}`, "branch", config));
   if (!narrow && Number.isFinite(git.additions) && Number.isFinite(git.deletions)) {
     parts.push(`${paint(`+${git.additions}`, "good", config)} ${paint(`-${git.deletions}`, "danger", config)}`);
+  }
+  if (config.show.taskProgress && session.taskProgress) {
+    parts.push(paint(session.taskProgress, "value", config));
   }
   if (config.show.status && session.status) parts.push(paint(session.status, statusColor(session.status), config, true));
   return join(parts, config);

@@ -7,18 +7,18 @@
 
 ## 支持范围
 
-- 已验证：Linux x86_64（GNU/glibc）。
-- 构建脚本也识别 Linux arm64 和 macOS x86_64/arm64，但这些平台尚未在本仓库验证。
+- 提供免编译安装包并已验证：Linux x86_64（GNU/glibc）。
+- Linux arm64 和 macOS x86_64/arm64 暂无预编译包，可以按“从源码构建”章节自行构建。
 - Windows 请在 WSL2 中按 Linux 方式安装；暂不支持原生 Windows。
 - 固定 Codex 版本：`0.147.0`（上游提交 `be6e8eac029b183056b7e4402879f15d2c85f61b`）。
 
-首次安装会从源码构建 Codex。建议准备 30 GB 可用磁盘、至少 8 GB 内存（内存不足时启用 swap），构建通常需要 20-60 分钟。
+普通安装直接下载 GitHub Release 中的预编译运行包，不需要 Rust、Python、C/C++ 工具链，也不会在用户机器上构建 Codex。
 
 默认效果大致如下；没有真实数据的可选行会自动隐藏：
 
 ```text
-[GPT 5.6 Sol] | codex-hud | git:main | Working
-Context █████░░░░░ 45% | 62k/128k
+[GPT 5.6 Sol] | codex-hud | git:main | Tasks 0/4 | Working
+Context █████░░░░░ 45% | 75k/258.4k
 ✓ Edit: auth.ts | ✓ Read ×3 | ✓ Grep ×2
 ▸ Fix authentication bug (2/5)
 5h █░░░░░░░ 88% left | weekly ██░░░░░░ 72% left
@@ -27,32 +27,28 @@ Context █████░░░░░ 45% | 62k/128k
 
 Tools 统计来自 Codex 的结构化命令/文件变更事件：`◐` 表示正在执行，`✓` 只累计当前 turn 成功完成的活动。Todo 来自 `update_plan`。Shift+Tab 切换的是 Codex 原生 `Default`/`Plan` 协作模式；sandbox profile 和 approval mode 单独显示，不伪装成 Claude Code 的三档权限模式。当前版本没有输出子代理状态行，因为 HUD 所在的 `ChatWidget` 没有完整、持久的子代理状态快照。
 
-## 前置条件
+## 快速安装
 
-- Git、Python 3.11+、C/C++ 构建工具和 `pkg-config`
-- [Rustup](https://rustup.rs/)；脚本会按上游配置安装 Rust `1.95.0` 和目标平台组件
-- Node.js 18+，用于 HUD 渲染器
-- 可访问 GitHub 和 crates.io 的网络
-
-Ubuntu/Debian 的基础工具可以这样安装（Node.js 需另行安装 18+ 版本）：
+需要 Linux x86_64、`curl`、`tar`、`sha256sum` 和 Node.js 18+。运行：
 
 ```bash
-sudo apt update
-sudo apt install -y git curl python3 build-essential pkg-config
+curl -fsSL https://raw.githubusercontent.com/dream-huan/codex-hud/main/scripts/install.sh | sh
 ```
 
-Node.js 需要确认是 18 或更高版本：
+安装器会自动下载最新 Release，并在解压前校验 SHA-256。不会执行 Cargo，也不会拉取 Codex 源码。
 
-```bash
-node --version
-```
-
-## 安装到自己的机器
+如果更愿意先检查脚本，也可以 clone 后执行；行为相同，仍然下载预编译包：
 
 ```bash
 git clone https://github.com/dream-huan/codex-hud.git
 cd codex-hud
 ./scripts/install.sh
+```
+
+安装指定版本：
+
+```bash
+CODEX_HUD_VERSION=v0.1.0 ./scripts/install.sh
 ```
 
 如果 `~/.local/bin` 不在 `PATH` 中，把下面一行加入 `~/.bashrc` 或 `~/.zshrc`：
@@ -73,7 +69,7 @@ codex-hud
 codex-hud login
 ```
 
-安装后的文件与 Git 仓库解耦：
+安装后的文件：
 
 ```text
 ~/.local/bin/codex-hud                 命令入口
@@ -81,15 +77,17 @@ codex-hud login
 ~/.config/codex-hud/config.json        用户配置
 ```
 
-因此安装成功后，可以移动或删除克隆的仓库。官方 `codex` 命令和安装目录不会被修改。
+官方 `codex` 命令和安装目录不会被修改。
 
-## 分步构建和安装
+## 从源码构建
 
-需要观察构建过程或制作自己的包时，分两步执行：
+这部分只面向修改 Rust 补丁或尚无预编译包的平台。需要 Git、Python 3.11+、C/C++ 构建工具、`pkg-config`、Rustup、Node.js 18+，并建议准备 30 GB 可用磁盘和至少 8 GB 内存。首次构建通常需要 20–60 分钟。
 
 ```bash
+git clone https://github.com/dream-huan/codex-hud.git
+cd codex-hud
 CODEX_BUILD_JOBS=4 ./scripts/build.sh
-./scripts/install.sh
+CODEX_HUD_PACKAGE_SOURCE=dist/package ./scripts/install.sh
 ```
 
 构建产物位于 `dist/package/`。脚本使用上游的标准 package builder，包中包含主程序、`codex-code-mode-host`、Linux sandbox、ripgrep 和 patched zsh 等运行时资源。
@@ -118,11 +116,12 @@ CODEX_BUILD_JOBS=4 ./scripts/build.sh
     "project": true,
     "branch": true,
     "reasoning": false,
+    "taskProgress": true,
     "tools": true,
     "todo": true,
     "limits": true,
     "mode": true,
-    "tokenBreakdown": false,
+    "tokenBreakdown": true,
     "resetTimes": true
   },
   "colors": {
@@ -139,7 +138,7 @@ CODEX_BUILD_JOBS=4 ./scripts/build.sh
 }
 ```
 
-`lineOrder` 可以重新排序或隐藏 `header`、`context`、`tools`、`todo`、`limits`、`mode`。`show.reasoning` 会把推理强度加入模型方括号；设置 `NO_COLOR=1` 可关闭 ANSI 颜色。
+`lineOrder` 可以重新排序或隐藏 `header`、`context`、`tools`、`todo`、`limits`、`mode`。`show.taskProgress` 控制顶部的 `Tasks 0/4`；Context 行始终保留 `75k/258.4k` 形式的当前/总 token，`show.tokenBreakdown` 控制额外的 `in/out/cached` 明细。`show.reasoning` 会把推理强度加入模型方括号；设置 `NO_COLOR=1` 可关闭 ANSI 颜色。
 
 运行时变量：
 
@@ -156,26 +155,23 @@ CODEX_BUILD_JOBS=4 ./scripts/build.sh
 ## 更新
 
 ```bash
-cd codex-hud
-git pull --ff-only
-./scripts/build.sh
-./scripts/install.sh
+~/.local/share/codex-hud/scripts/install.sh
 ```
 
-用户配置不会被覆盖。由于补丁固定上游版本，升级 Codex 需要先更新并重新验证 `patches/` 中的补丁，不能只修改版本号。
+更新同样下载最新预编译 Release，不会重新构建，用户配置不会被覆盖。由于补丁固定上游版本，项目维护者升级 Codex 时需要先更新并重新验证 `patches/` 中的补丁，不能只修改版本号。
 
 ## 卸载
 
 删除命令和运行文件，但保留用户配置：
 
 ```bash
-./scripts/uninstall.sh
+~/.local/share/codex-hud/scripts/uninstall.sh
 ```
 
 同时删除 `~/.config/codex-hud`：
 
 ```bash
-./scripts/uninstall.sh --purge
+~/.local/share/codex-hud/scripts/uninstall.sh --purge
 ```
 
 ## 开发与验证
@@ -193,7 +189,9 @@ cargo test -p codex-tui custom_status_line
 
 `codex-hud: command not found`：确认 `~/.local/bin` 已加入 `PATH`。
 
-构建进程被系统终止：通常是内存或磁盘不足。减少并行数，例如 `CODEX_BUILD_JOBS=2 ./scripts/build.sh`，并检查 swap 和剩余空间。
+安装返回 404：该平台尚无预编译 Release；按“从源码构建”章节安装，或等待对应平台发布。
+
+源码构建进程被系统终止：通常是内存或磁盘不足。减少并行数，例如 `CODEX_BUILD_JOBS=2 ./scripts/build.sh`，并检查 swap 和剩余空间。
 
 补丁无法应用：删除项目内的 `.cache/codex` 后重试。不要把 `CODEX_HUD_SOURCE_DIR` 指向其他 Codex 版本。
 

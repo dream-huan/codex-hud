@@ -21,6 +21,19 @@ case "$DATA_DIR" in
     exit 1
     ;;
 esac
+DATA_PARENT=$(dirname -- "$DATA_DIR")
+DATA_NAME=$(basename -- "$DATA_DIR")
+case "$DATA_NAME" in
+  ""|.|..)
+    echo "codex-hud: refusing unsafe data directory: $DATA_DIR" >&2
+    exit 1
+    ;;
+esac
+if [ -d "$DATA_PARENT" ]; then
+  DATA_PARENT=$(CDPATH= cd -P -- "$DATA_PARENT" && pwd)
+  DATA_DIR=$DATA_PARENT/$DATA_NAME
+  INSTALLED_LAUNCHER=$DATA_DIR/bin/codex-hud
+fi
 
 if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$INSTALLED_LAUNCHER" ]; then
   rm -f -- "$LINK"
@@ -30,6 +43,18 @@ if [ -e "$DATA_DIR" ]; then
 fi
 
 if [ "$PURGE" -eq 1 ]; then
+  CONFIG_PARENT=$(dirname -- "$CONFIG_DIR")
+  CONFIG_NAME=$(basename -- "$CONFIG_DIR")
+  case "$CONFIG_NAME" in
+    ""|.|..)
+      echo "codex-hud: refusing unsafe config directory: $CONFIG_DIR" >&2
+      exit 1
+      ;;
+  esac
+  if [ -d "$CONFIG_PARENT" ]; then
+    CONFIG_PARENT=$(CDPATH= cd -P -- "$CONFIG_PARENT" && pwd)
+    CONFIG_DIR=$CONFIG_PARENT/$CONFIG_NAME
+  fi
   case "$CONFIG_DIR" in
     ""|/|"$HOME"|"$HOME/.config")
       echo "codex-hud: refusing unsafe config directory: $CONFIG_DIR" >&2

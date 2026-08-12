@@ -26,7 +26,7 @@ CODEX_HUD_RENDERER=${CODEX_HUD_RENDERER:-$HUD_ROOT/renderer/statusline.mjs}
 
 if [ ! -x "$CODEX_HUD_BINARY" ]; then
   echo "codex-hud: patched Codex binary is missing: $CODEX_HUD_BINARY" >&2
-  echo "Run scripts/build.sh and scripts/install.sh from the codex-hud repository." >&2
+  echo "Reinstall codex-hud, or build a local package with scripts/build.sh." >&2
   exit 1
 fi
 if [ ! -x "$CODEX_HUD_RENDERER" ]; then

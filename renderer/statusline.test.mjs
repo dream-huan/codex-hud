@@ -11,8 +11,8 @@ const snapshot = {
   session: { status: "Working", taskProgress: "Tasks 2/5", currentTask: "Fix authentication bug" },
   context: {
     usedPercent: 45,
-    currentTokens: 62000,
-    windowTokens: 128000,
+    currentTokens: 75000,
+    windowTokens: 258400,
     inputTokens: 50000,
     outputTokens: 12000,
     cachedInputTokens: 18000,
@@ -37,8 +37,10 @@ test("renders native HUD data in Claude-HUD-style lines", () => {
     const lines = render(snapshot, {}).split("\n");
     assert.equal(lines.length, 6);
     assert.match(lines[0], /^\[GPT 5\.6 Sol\]/);
+    assert.match(lines[0], /Tasks 2\/5/);
     assert.doesNotMatch(lines[0], /^Codex/);
     assert.match(lines[1], /^Context \u2588{5}\u2591{5} 45%/u);
+    assert.match(lines[1], /75k\/258\.4k/);
     assert.equal(lines[2], "✓ Edit: auth.ts | ✓ Read ×3 | ✓ Grep ×2");
     assert.equal(lines[3], "▸ Fix authentication bug (2/5)");
     assert.match(lines[4], /88% left/);

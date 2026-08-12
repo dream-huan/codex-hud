@@ -7,11 +7,12 @@
     "project": true,
     "branch": true,
     "reasoning": false,
+    "taskProgress": true,
     "tools": true,
     "todo": true,
     "limits": true,
     "mode": true,
-    "tokenBreakdown": false,
+    "tokenBreakdown": true,
     "resetTimes": true
   },
   "colors": {
