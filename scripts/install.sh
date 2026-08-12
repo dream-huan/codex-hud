@@ -55,6 +55,21 @@ need_command() {
   fi
 }
 
+download() {
+  DOWNLOAD_URL=$1
+  DOWNLOAD_PATH=$2
+  ATTEMPT=1
+  while ! curl -fsSL -o "$DOWNLOAD_PATH" "$DOWNLOAD_URL"; do
+    if [ "$ATTEMPT" -ge 4 ]; then
+      echo "codex-hud: download failed after $ATTEMPT attempts: $DOWNLOAD_URL" >&2
+      return 1
+    fi
+    ATTEMPT=$((ATTEMPT + 1))
+    echo "Download interrupted; retrying ($ATTEMPT/4)..." >&2
+    sleep 2
+  done
+}
+
 detect_target() {
   OS=$(uname -s)
   ARCH=$(uname -m)
@@ -131,8 +146,8 @@ else
   fi
 
   echo "Downloading codex-hud ${VERSION} for ${TARGET}..."
-  curl -fsSL --retry 3 --retry-delay 2 -o "$TMP_DIR/$ASSET" "$DOWNLOAD_ROOT/$ASSET"
-  curl -fsSL --retry 3 --retry-delay 2 -o "$TMP_DIR/$ASSET.sha256" "$DOWNLOAD_ROOT/$ASSET.sha256"
+  download "$DOWNLOAD_ROOT/$ASSET" "$TMP_DIR/$ASSET"
+  download "$DOWNLOAD_ROOT/$ASSET.sha256" "$TMP_DIR/$ASSET.sha256"
   (cd "$TMP_DIR" && sha256sum -c "$ASSET.sha256")
   tar -xzf "$TMP_DIR/$ASSET" -C "$STAGE_DIR"
 fi
