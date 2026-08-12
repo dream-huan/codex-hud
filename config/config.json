@@ -1,0 +1,28 @@
+{
+  "lineOrder": ["header", "context", "tools", "todo", "limits", "mode"],
+  "barWidth": 10,
+  "separator": " | ",
+  "show": {
+    "status": true,
+    "project": true,
+    "branch": true,
+    "reasoning": false,
+    "tools": true,
+    "todo": true,
+    "limits": true,
+    "mode": true,
+    "tokenBreakdown": false,
+    "resetTimes": true
+  },
+  "colors": {
+    "label": "brightBlack",
+    "model": "brightCyan",
+    "project": "brightBlue",
+    "branch": "brightMagenta",
+    "good": "brightGreen",
+    "warning": "brightYellow",
+    "danger": "brightRed",
+    "value": "white",
+    "muted": "brightBlack"
+  }
+}

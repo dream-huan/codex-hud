@@ -1,0 +1,857 @@
+diff --git a/codex-rs/tui/Cargo.toml b/codex-rs/tui/Cargo.toml
+index 8d79afc..6ce56ef 100644
+--- a/codex-rs/tui/Cargo.toml
++++ b/codex-rs/tui/Cargo.toml
+@@ -100,6 +100,7 @@ textwrap = { workspace = true }
+ thiserror = { workspace = true }
+ tokio = { workspace = true, features = [
+     "io-std",
++    "io-util",
+     "macros",
+     "process",
+     "rt-multi-thread",
+diff --git a/codex-rs/tui/src/app/event_dispatch.rs b/codex-rs/tui/src/app/event_dispatch.rs
+index 2d55735..ea17a6e 100644
+--- a/codex-rs/tui/src/app/event_dispatch.rs
++++ b/codex-rs/tui/src/app/event_dispatch.rs
+@@ -2325,6 +2325,21 @@ impl App {
+                 self.chat_widget.set_status_line_branch(cwd, branch);
+                 self.refresh_status_line();
+             }
++            AppEvent::CustomStatusLineRendered {
++                instance_id,
++                request_id,
++                result,
++            } => {
++                self.chat_widget
++                    .finish_custom_status_line(instance_id, request_id, result);
++            }
++            AppEvent::CustomStatusLineTick {
++                instance_id,
++                after_request_id,
++            } => {
++                self.chat_widget
++                    .handle_custom_status_line_tick(instance_id, after_request_id);
++            }
+             AppEvent::StatusLineGitSummaryUpdated { cwd, summary } => {
+                 self.chat_widget.set_status_line_git_summary(cwd, summary);
+                 self.refresh_status_line();
+diff --git a/codex-rs/tui/src/app_event.rs b/codex-rs/tui/src/app_event.rs
+index 4e55cca..ef5c3f3 100644
+--- a/codex-rs/tui/src/app_event.rs
++++ b/codex-rs/tui/src/app_event.rs
+@@ -1080,6 +1080,18 @@ pub(crate) enum AppEvent {
+     /// Launch the external editor after a normal draw has completed.
+     LaunchExternalEditor,
+ 
++    /// Completed output from an environment-configured custom status-line command.
++    CustomStatusLineRendered {
++        instance_id: Uuid,
++        request_id: u64,
++        result: Result<String, String>,
++    },
++    /// Periodic refresh for the custom status-line command.
++    CustomStatusLineTick {
++        instance_id: Uuid,
++        after_request_id: u64,
++    },
++
+     /// Async update of the current git branch for status line rendering.
+     StatusLineBranchUpdated {
+         cwd: PathBuf,
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer.rs b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+index 9574b61..68f4059 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+@@ -224,11 +224,13 @@ use super::footer::footer_hint_items_width;
+ use super::footer::footer_line_width;
+ use super::footer::inset_footer_hint_area;
+ use super::footer::max_left_width_for_right;
++use super::footer::passive_footer_custom_status_lines;
+ use super::footer::passive_footer_status_line;
+ use super::footer::render_context_right;
+ use super::footer::render_footer_from_props;
+ use super::footer::render_footer_hint_items;
+ use super::footer::render_footer_line;
++use super::footer::render_footer_lines;
+ use super::footer::reset_mode_after_activity;
+ use super::footer::side_conversation_context_line;
+ use super::footer::single_line_footer_layout;
+@@ -625,6 +627,7 @@ impl ChatComposer {
+                 goal_status_indicator: None,
+                 ide_context_active: false,
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_hyperlink_url: None,
+                 status_line_enabled: false,
+                 side_conversation_context_label: None,
+@@ -3708,6 +3711,7 @@ impl ChatComposer {
+             collaboration_modes_enabled: self.collaboration_modes_enabled,
+             is_wsl,
+             status_line_value: self.footer.status_line_value.clone(),
++            custom_status_line: self.footer.custom_status_line.clone(),
+             status_line_enabled: self.footer.status_line_enabled,
+             key_hints: FooterKeyHints {
+                 toggle_shortcuts: self.footer.toggle_shortcuts_key,
+@@ -3762,6 +3766,9 @@ impl ChatComposer {
+         if self.footer.flash_visible() {
+             return Some(1);
+         }
++        if self.footer.plan_mode_nudge_visible {
++            return Some(1);
++        }
+         self.footer
+             .hint_override
+             .as_ref()
+@@ -4244,6 +4251,17 @@ impl ChatComposer {
+         true
+     }
+ 
++    pub(crate) fn set_custom_status_line(
++        &mut self,
++        status_line: Option<Vec<Line<'static>>>,
++    ) -> bool {
++        if self.footer.custom_status_line == status_line {
++            return false;
++        }
++        self.footer.custom_status_line = status_line;
++        true
++    }
++
+     pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) -> bool {
+         if self.footer.status_line_hyperlink_url == url {
+             return false;
+@@ -4533,6 +4551,17 @@ impl ChatComposer {
+                             available_width,
+                         ),
+                     );
++                } else if !self.footer.flash_visible()
++                    && self.footer.hint_override.is_none()
++                    && let Some(lines) = passive_footer_custom_status_lines(&footer_props)
++                {
++                    let available_width =
++                        hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
++                    let lines = lines
++                        .into_iter()
++                        .map(|line| truncate_line_with_ellipsis_if_overflow(line, available_width))
++                        .collect();
++                    render_footer_lines(hint_rect, buf, lines);
+                 } else {
+                     let available_width =
+                         hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs b/codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs
+index fd63d2d..b3e6d36 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs
+@@ -28,6 +28,7 @@ pub(super) struct FooterState {
+     pub(super) goal_status_indicator: Option<GoalStatusIndicator>,
+     pub(super) ide_context_active: bool,
+     pub(super) status_line_value: Option<Line<'static>>,
++    pub(super) custom_status_line: Option<Vec<Line<'static>>>,
+     pub(super) status_line_hyperlink_url: Option<String>,
+     pub(super) status_line_enabled: bool,
+     pub(super) side_conversation_context_label: Option<String>,
+diff --git a/codex-rs/tui/src/bottom_pane/footer.rs b/codex-rs/tui/src/bottom_pane/footer.rs
+index 1bb3c7a..91e74a6 100644
+--- a/codex-rs/tui/src/bottom_pane/footer.rs
++++ b/codex-rs/tui/src/bottom_pane/footer.rs
+@@ -77,6 +77,7 @@ pub(crate) struct FooterProps {
+     /// This is rendered when `mode` is `FooterMode::QuitShortcutReminder`.
+     pub(crate) quit_shortcut_key: KeyBinding,
+     pub(crate) status_line_value: Option<Line<'static>>,
++    pub(crate) custom_status_line: Option<Vec<Line<'static>>>,
+     pub(crate) status_line_enabled: bool,
+     pub(crate) key_hints: FooterKeyHints,
+     /// Active thread label shown when the footer is rendering contextual information instead of an
+@@ -247,8 +248,13 @@ pub(crate) fn footer_height(props: &FooterProps) -> u16 {
+ 
+ /// Render a single precomputed footer line.
+ pub(crate) fn render_footer_line(area: Rect, buf: &mut Buffer, line: Line<'static>) {
++    render_footer_lines(area, buf, vec![line]);
++}
++
++/// Render precomputed footer lines with the standard left inset.
++pub(crate) fn render_footer_lines(area: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) {
+     Paragraph::new(prefix_lines(
+-        vec![line],
++        lines,
+         " ".repeat(FOOTER_INDENT_COLS).into(),
+         " ".repeat(FOOTER_INDENT_COLS).into(),
+     ))
+@@ -705,6 +711,9 @@ fn footer_from_props_lines(
+     show_queue_hint: bool,
+ ) -> Vec<Line<'static>> {
+     let key_hints = props.key_hints;
++    if let Some(lines) = passive_footer_custom_status_lines(props) {
++        return lines;
++    }
+     // Passive footer context can come from the configurable status line, the
+     // active agent label, or both combined.
+     if let Some(status_line) = passive_footer_status_line(props) {
+@@ -763,6 +772,20 @@ fn footer_from_props_lines(
+     }
+ }
+ 
++/// Returns externally rendered status lines when the footer is in a passive state.
++pub(crate) fn passive_footer_custom_status_lines(
++    props: &FooterProps,
++) -> Option<Vec<Line<'static>>> {
++    if !props.status_line_enabled || !shows_passive_footer_line(props) {
++        return None;
++    }
++
++    props
++        .custom_status_line
++        .clone()
++        .filter(|lines| !lines.is_empty())
++}
++
+ /// Returns the contextual footer row when the footer is not busy showing an instructional hint.
+ ///
+ /// The returned line may contain the configured status line, the currently viewed agent label, or
+@@ -1559,6 +1582,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1577,6 +1601,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints {
+                     insert_newline: Some(key_hint::shift(KeyCode::Enter).into()),
+@@ -1598,6 +1623,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1616,6 +1642,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1634,6 +1661,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1652,6 +1680,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1670,6 +1699,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1688,6 +1718,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1706,6 +1737,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1726,6 +1758,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1746,6 +1779,7 @@ mod tests {
+                 is_wsl: false,
+                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+                 status_line_value: None,
++                custom_status_line: None,
+                 status_line_enabled: false,
+                 key_hints: FooterKeyHints::default_bindings(),
+                 active_agent_label: None,
+@@ -1762,6 +1796,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: None,
++            custom_status_line: None,
+             status_line_enabled: false,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1791,6 +1826,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: None,
++            custom_status_line: None,
+             status_line_enabled: false,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1813,6 +1849,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: Some(Line::from("Status line content".to_string())),
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1830,6 +1867,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: Some(Line::from("Status line content".to_string())),
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1847,6 +1885,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: Some(Line::from("Status line content".to_string())),
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1864,6 +1903,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: None, // command timed out / empty
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1895,6 +1935,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: None,
++            custom_status_line: None,
+             status_line_enabled: false,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1918,6 +1959,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: None,
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1944,6 +1986,7 @@ mod tests {
+             status_line_value: Some(Line::from(
+                 "Status line content that should truncate before the mode indicator".to_string(),
+             )),
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+@@ -1967,6 +2010,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: None,
++            custom_status_line: None,
+             status_line_enabled: false,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: Some("Robie [explorer]".to_string()),
+@@ -1984,6 +2028,7 @@ mod tests {
+             is_wsl: false,
+             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+             status_line_value: Some(Line::from("Status line content".to_string())),
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: Some("Robie [explorer]".to_string()),
+@@ -1992,6 +2037,31 @@ mod tests {
+         snapshot_footer("footer_status_line_with_active_agent_label", props);
+     }
+ 
++    #[test]
++    fn custom_status_line_controls_footer_height() {
++        let props = FooterProps {
++            mode: FooterMode::ComposerEmpty,
++            esc_backtrack_hint: false,
++            use_shift_enter_hint: false,
++            is_task_running: false,
++            queue_submissions: false,
++            collaboration_modes_enabled: false,
++            is_wsl: false,
++            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
++            status_line_value: Some(Line::from("native")),
++            custom_status_line: Some(vec![
++                Line::from("first"),
++                Line::from("second"),
++                Line::from("third"),
++            ]),
++            status_line_enabled: true,
++            key_hints: FooterKeyHints::default_bindings(),
++            active_agent_label: None,
++        };
++
++        assert_eq!(footer_height(&props), 3);
++    }
++
+     #[test]
+     fn footer_status_line_truncates_to_keep_mode_indicator() {
+         let props = FooterProps {
+@@ -2007,6 +2077,7 @@ mod tests {
+                 "Status line content that is definitely too long to fit alongside the mode label"
+                     .to_string(),
+             )),
++            custom_status_line: None,
+             status_line_enabled: true,
+             key_hints: FooterKeyHints::default_bindings(),
+             active_agent_label: None,
+diff --git a/codex-rs/tui/src/bottom_pane/mod.rs b/codex-rs/tui/src/bottom_pane/mod.rs
+index 527e510..b93f801 100644
+--- a/codex-rs/tui/src/bottom_pane/mod.rs
++++ b/codex-rs/tui/src/bottom_pane/mod.rs
+@@ -1816,6 +1816,12 @@ impl BottomPane {
+         }
+     }
+ 
++    pub(crate) fn set_custom_status_line(&mut self, status_line: Option<Vec<Line<'static>>>) {
++        if self.composer.set_custom_status_line(status_line) {
++            self.request_redraw();
++        }
++    }
++
+     pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) {
+         if self.composer.set_status_line_hyperlink(url) {
+             self.request_redraw();
+diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs
+index bb1d3aa..f762e61 100644
+--- a/codex-rs/tui/src/chatwidget.rs
++++ b/codex-rs/tui/src/chatwidget.rs
+@@ -335,6 +335,8 @@ use crate::status_indicator_widget::StatusDetailsCapitalization;
+ use crate::text_formatting::truncate_text;
+ use crate::tui::FrameRequester;
+ mod command_lifecycle;
++mod custom_status_line;
++use self::custom_status_line::CustomStatusLineRuntime;
+ mod connectors;
+ mod constructor;
+ use self::connectors::ConnectorsState;
+@@ -724,6 +726,8 @@ pub(crate) struct ChatWidget {
+     terminal_title_invalid_items_warned: Arc<AtomicBool>,
+     // Last terminal title emitted, to avoid writing duplicate OSC updates.
+     pub(crate) last_terminal_title: Option<String>,
++    // Optional environment-configured external multiline footer renderer.
++    custom_status_line: Option<CustomStatusLineRuntime>,
+     // Last visible "action required" state observed by the terminal-title renderer.
+     last_terminal_title_requires_action: bool,
+     // Original terminal-title config captured when the setup UI opens.
+diff --git a/codex-rs/tui/src/chatwidget/command_lifecycle.rs b/codex-rs/tui/src/chatwidget/command_lifecycle.rs
+index 03ca9c8..908bb5a 100644
+--- a/codex-rs/tui/src/chatwidget/command_lifecycle.rs
++++ b/codex-rs/tui/src/chatwidget/command_lifecycle.rs
+@@ -334,6 +334,7 @@ impl ChatWidget {
+             command,
+             process_id: _,
+             source,
++            status,
+             command_actions,
+             aggregated_output,
+             exit_code,
+@@ -364,6 +365,18 @@ impl ChatWidget {
+         let is_unified_exec_interaction =
+             matches!(source, ExecCommandSource::UnifiedExecInteraction);
+         let is_user_shell = source == ExecCommandSource::UserShell;
++        if self.bottom_pane.is_task_running()
++            && matches!(
++                status,
++                codex_app_server_protocol::CommandExecutionStatus::Completed
++            )
++            && !matches!(
++                source,
++                ExecCommandSource::UserShell | ExecCommandSource::UnifiedExecInteraction
++            )
++        {
++            self.transcript.record_command_activity(&parsed);
++        }
+         let end_target = match self.transcript.active_cell.as_ref() {
+             Some(cell) => match cell.as_any().downcast_ref::<ExecCell>() {
+                 Some(exec_cell) if exec_cell.iter_calls().any(|call| call.call_id == id) => {
+diff --git a/codex-rs/tui/src/chatwidget/constructor.rs b/codex-rs/tui/src/chatwidget/constructor.rs
+index 06ccca7..33362bc 100644
+--- a/codex-rs/tui/src/chatwidget/constructor.rs
++++ b/codex-rs/tui/src/chatwidget/constructor.rs
+@@ -89,6 +89,7 @@ impl ChatWidget {
+             config.http_client_factory(),
+             codex_http_client::ClientRouteClass::Other,
+         );
++        let custom_status_line = CustomStatusLineRuntime::from_env();
+         pets::start_configured_pet_load_if_needed(
+             &config,
+             /*ambient_pet_missing*/ true,
+@@ -231,6 +232,7 @@ impl ChatWidget {
+             status_line_invalid_items_warned,
+             terminal_title_invalid_items_warned,
+             last_terminal_title: None,
++            custom_status_line,
+             last_terminal_title_requires_action: false,
+             terminal_title_setup_original_items: None,
+             terminal_title_animation_origin: Instant::now(),
+@@ -262,9 +264,10 @@ impl ChatWidget {
+         widget
+             .bottom_pane
+             .set_vim_enabled(widget.config.tui_vim_mode_default);
+-        widget
+-            .bottom_pane
+-            .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
++        widget.bottom_pane.set_status_line_enabled(
++            widget.custom_status_line_enabled()
++                || !widget.configured_status_line_items().is_empty(),
++        );
+         widget
+             .bottom_pane
+             .set_collaboration_modes_enabled(/*enabled*/ true);
+diff --git a/codex-rs/tui/src/chatwidget/status_controls.rs b/codex-rs/tui/src/chatwidget/status_controls.rs
+index 8a78601..3cb7157 100644
+--- a/codex-rs/tui/src/chatwidget/status_controls.rs
++++ b/codex-rs/tui/src/chatwidget/status_controls.rs
+@@ -49,7 +49,7 @@ impl ChatWidget {
+                     .iter()
+                     .any(|item| item == "run-state" || item == "status")
+             });
+-        if title_uses_status {
++        if title_uses_status || self.custom_status_line_enabled() {
+             self.refresh_status_surfaces();
+         }
+         status_indicator_updated
+diff --git a/codex-rs/tui/src/chatwidget/status_surfaces.rs b/codex-rs/tui/src/chatwidget/status_surfaces.rs
+index 5c9343c..575ab63 100644
+--- a/codex-rs/tui/src/chatwidget/status_surfaces.rs
++++ b/codex-rs/tui/src/chatwidget/status_surfaces.rs
+@@ -140,7 +140,7 @@ impl ChatWidget {
+     }
+ 
+     fn sync_status_surface_shared_state(&mut self, selections: &StatusSurfaceSelections) {
+-        if !selections.uses_git_branch() {
++        if !selections.uses_git_branch() && !self.custom_status_line_enabled() {
+             self.status_line_branch = None;
+             self.status_line_branch_pending = false;
+             self.status_line_branch_lookup_complete = false;
+@@ -152,7 +152,7 @@ impl ChatWidget {
+             }
+         }
+ 
+-        if !selections.uses_git_summary() {
++        if !selections.uses_git_summary() && !self.custom_status_line_enabled() {
+             self.status_line_git_summary = None;
+             self.status_line_git_summary_pending = false;
+             self.status_line_git_summary_lookup_complete = false;
+@@ -175,7 +175,7 @@ impl ChatWidget {
+     }
+ 
+     fn refresh_status_line_from_selections(&mut self, selections: &StatusSurfaceSelections) {
+-        let enabled = !selections.status_line_items.is_empty();
++        let enabled = self.custom_status_line_enabled() || !selections.status_line_items.is_empty();
+         self.bottom_pane.set_status_line_enabled(enabled);
+         if !enabled {
+             self.set_status_line(/*status_line*/ None);
+@@ -281,6 +281,7 @@ impl ChatWidget {
+         self.sync_status_surface_shared_state(&selections);
+         self.refresh_status_line_from_selections(&selections);
+         self.refresh_terminal_title_from_selections(&selections);
++        self.refresh_custom_status_line();
+     }
+ 
+     /// Recomputes and emits the terminal title from config and runtime state.
+@@ -430,7 +431,7 @@ impl ChatWidget {
+         })
+     }
+ 
+-    fn status_line_cwd(&self) -> &Path {
++    pub(super) fn status_line_cwd(&self) -> &Path {
+         self.current_cwd
+             .as_deref()
+             .unwrap_or(self.config.cwd.as_path())
+@@ -996,7 +997,7 @@ impl ChatWidget {
+     }
+ }
+ 
+-fn five_hour_status_window(
++pub(super) fn five_hour_status_window(
+     snapshot: &RateLimitSnapshotDisplay,
+ ) -> Option<(&RateLimitWindowDisplay, bool)> {
+     find_primary_codex_window(snapshot, "5h")
+@@ -1005,7 +1006,7 @@ fn five_hour_status_window(
+         .or_else(|| non_weekly_secondary_window_when_primary_is_weekly(snapshot))
+ }
+ 
+-fn weekly_status_window(
++pub(super) fn weekly_status_window(
+     snapshot: &RateLimitSnapshotDisplay,
+ ) -> Option<(&RateLimitWindowDisplay, bool)> {
+     find_codex_window(snapshot, "weekly")
+diff --git a/codex-rs/tui/src/chatwidget/tool_lifecycle.rs b/codex-rs/tui/src/chatwidget/tool_lifecycle.rs
+index 17daa99..7afd017 100644
+--- a/codex-rs/tui/src/chatwidget/tool_lifecycle.rs
++++ b/codex-rs/tui/src/chatwidget/tool_lifecycle.rs
+@@ -8,6 +8,14 @@ use codex_utils_path_uri::LegacyAppPathString;
+ 
+ impl ChatWidget {
+     pub(super) fn on_patch_apply_begin(&mut self, changes: HashMap<PathBuf, FileChange>) {
++        if self.bottom_pane.is_task_running() {
++            let mut paths = changes
++                .keys()
++                .map(|path| display_path_for(path, &self.config.cwd))
++                .collect::<Vec<_>>();
++            paths.sort();
++            self.transcript.tool_activity.active_edit = paths.into_iter().next();
++        }
+         self.add_to_history(history_cell::new_patch_event(changes, &self.config.cwd));
+     }
+ 
+@@ -105,6 +113,9 @@ impl ChatWidget {
+         if !handled {
+             self.add_to_history(history_cell::new_web_search_call(call_id, query, action));
+         }
++        if self.bottom_pane.is_task_running() {
++            self.transcript.tool_activity.web_searches += 1;
++        }
+         self.transcript.had_work_activity = true;
+     }
+ 
+@@ -152,9 +163,22 @@ impl ChatWidget {
+     }
+ 
+     pub(crate) fn handle_file_change_completed_now(&mut self, item: ThreadItem) {
+-        let ThreadItem::FileChange { status, .. } = item else {
++        let ThreadItem::FileChange {
++            changes, status, ..
++        } = item
++        else {
+             return;
+         };
++        self.transcript.tool_activity.active_edit = None;
++        if self.bottom_pane.is_task_running()
++            && matches!(
++                status,
++                codex_app_server_protocol::PatchApplyStatus::Completed
++            )
++        {
++            self.transcript
++                .record_edits(changes.into_iter().map(|change| change.path));
++        }
+         // If the patch was successful, just let the "Edited" block stand.
+         // Otherwise, add a failure block.
+         if matches!(status, codex_app_server_protocol::PatchApplyStatus::Failed) {
+@@ -225,6 +249,7 @@ impl ChatWidget {
+             }
+             (None, None) => Err("MCP tool call completed without a result".to_string()),
+         };
++        let succeeded = result.is_ok();
+ 
+         let extra_cell = match self
+             .transcript
+@@ -247,6 +272,9 @@ impl ChatWidget {
+         if let Some(extra) = extra_cell {
+             self.add_boxed_history(extra);
+         }
++        if succeeded && self.bottom_pane.is_task_running() {
++            self.transcript.tool_activity.mcp_calls += 1;
++        }
+         // Mark that actual work was done (MCP tool call)
+         self.transcript.had_work_activity = true;
+     }
+diff --git a/codex-rs/tui/src/chatwidget/transcript.rs b/codex-rs/tui/src/chatwidget/transcript.rs
+index bacfa2b..75d89c0 100644
+--- a/codex-rs/tui/src/chatwidget/transcript.rs
++++ b/codex-rs/tui/src/chatwidget/transcript.rs
+@@ -1,6 +1,20 @@
+ //! Transcript and active-cell bookkeeping for `ChatWidget`.
+ 
+ use super::HistoryCell;
++use codex_protocol::parse_command::ParsedCommand;
++
++#[derive(Default)]
++pub(super) struct ToolActivityState {
++    pub(super) active_edit: Option<String>,
++    pub(super) last_edit: Option<String>,
++    pub(super) edits: usize,
++    pub(super) reads: usize,
++    pub(super) searches: usize,
++    pub(super) lists: usize,
++    pub(super) commands: usize,
++    pub(super) mcp_calls: usize,
++    pub(super) web_searches: usize,
++}
+ 
+ #[derive(Default)]
+ pub(super) struct TranscriptState {
+@@ -25,6 +39,10 @@ pub(super) struct TranscriptState {
+     pub(super) saw_plan_item_this_turn: bool,
+     /// Latest `update_plan` checklist task counts for terminal-title rendering.
+     pub(super) last_plan_progress: Option<(usize, usize)>,
++    /// Current or next checklist step from the latest `update_plan` call.
++    pub(super) last_plan_step: Option<String>,
++    /// Completed tool activity for the current turn.
++    pub(super) tool_activity: ToolActivityState,
+     /// Incremental buffer for streamed plan content.
+     pub(super) plan_delta_buffer: String,
+     /// True while a plan item is streaming.
+@@ -61,15 +79,40 @@ impl TranscriptState {
+         self.saw_plan_update_this_turn = false;
+         self.saw_plan_item_this_turn = false;
+         self.had_work_activity = false;
++        self.tool_activity = ToolActivityState::default();
+         self.latest_proposed_plan_markdown = None;
+         self.plan_delta_buffer.clear();
+         self.plan_item_active = false;
+     }
++
++    pub(super) fn record_command_activity(&mut self, parsed: &[ParsedCommand]) {
++        if parsed.is_empty() {
++            self.tool_activity.commands += 1;
++            return;
++        }
++
++        for command in parsed {
++            match command {
++                ParsedCommand::Read { .. } => self.tool_activity.reads += 1,
++                ParsedCommand::ListFiles { .. } => self.tool_activity.lists += 1,
++                ParsedCommand::Search { .. } => self.tool_activity.searches += 1,
++                ParsedCommand::Unknown { .. } => self.tool_activity.commands += 1,
++            }
++        }
++    }
++
++    pub(super) fn record_edits(&mut self, paths: impl IntoIterator<Item = String>) {
++        for path in paths {
++            self.tool_activity.last_edit = Some(path);
++            self.tool_activity.edits += 1;
++        }
++    }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use pretty_assertions::assert_eq;
++    use std::path::PathBuf;
+ 
+     use super::*;
+ 
+@@ -84,4 +127,38 @@ mod tests {
+ 
+         assert_eq!(state.active_cell_revision, 0);
+     }
++
++    #[test]
++    fn custom_status_line_tracks_structured_tool_activity() {
++        let mut state = TranscriptState::default();
++        state.record_command_activity(&[
++            ParsedCommand::Read {
++                cmd: "cat auth.ts".to_string(),
++                name: "auth.ts".to_string(),
++                path: PathBuf::from("auth.ts"),
++            },
++            ParsedCommand::Search {
++                cmd: "rg token".to_string(),
++                query: Some("token".to_string()),
++                path: None,
++            },
++            ParsedCommand::Unknown {
++                cmd: "npm test".to_string(),
++            },
++        ]);
++        state.record_edits(["src/auth.ts".to_string(), "src/session.ts".to_string()]);
++
++        assert_eq!(state.tool_activity.reads, 1);
++        assert_eq!(state.tool_activity.searches, 1);
++        assert_eq!(state.tool_activity.commands, 1);
++        assert_eq!(state.tool_activity.edits, 2);
++        assert_eq!(
++            state.tool_activity.last_edit.as_deref(),
++            Some("src/session.ts")
++        );
++
++        state.reset_turn_flags();
++        assert_eq!(state.tool_activity.reads, 0);
++        assert_eq!(state.tool_activity.edits, 0);
++    }
+ }
+diff --git a/codex-rs/tui/src/chatwidget/turn_runtime.rs b/codex-rs/tui/src/chatwidget/turn_runtime.rs
+index e8e7304..e121488 100644
+--- a/codex-rs/tui/src/chatwidget/turn_runtime.rs
++++ b/codex-rs/tui/src/chatwidget/turn_runtime.rs
+@@ -507,6 +507,19 @@ impl ChatWidget {
+             })
+             .count();
+         self.transcript.last_plan_progress = (total > 0).then_some((completed, total));
++        self.transcript.last_plan_step = update
++            .plan
++            .iter()
++            .find(|item| matches!(&item.status, StepStatus::InProgress))
++            .or_else(|| {
++                update
++                    .plan
++                    .iter()
++                    .find(|item| matches!(&item.status, StepStatus::Pending))
++            })
++            .or_else(|| update.plan.last())
++            .map(|item| item.step.trim().to_string())
++            .filter(|step| !step.is_empty());
+         self.refresh_status_surfaces();
+         self.add_to_history(history_cell::new_plan_update(update));
+     }
+diff --git a/codex-rs/tui/src/session_log.rs b/codex-rs/tui/src/session_log.rs
+index 0994367..6b84b69 100644
+--- a/codex-rs/tui/src/session_log.rs
++++ b/codex-rs/tui/src/session_log.rs
+@@ -197,6 +197,31 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
+             });
+             LOGGER.write_json_line(value);
+         }
++        AppEvent::CustomStatusLineRendered {
++            request_id, result, ..
++        } => {
++            let value = json!({
++                "ts": now_ts(),
++                "dir": "to_tui",
++                "kind": "app_event",
++                "variant": "CustomStatusLineRendered",
++                "request_id": request_id,
++                "ok": result.is_ok(),
++            });
++            LOGGER.write_json_line(value);
++        }
++        AppEvent::CustomStatusLineTick {
++            after_request_id, ..
++        } => {
++            let value = json!({
++                "ts": now_ts(),
++                "dir": "to_tui",
++                "kind": "app_event",
++                "variant": "CustomStatusLineTick",
++                "after_request_id": after_request_id,
++            });
++            LOGGER.write_json_line(value);
++        }
+         // Noise or control flow – record variant only
+         other => {
+             let value = json!({

@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+
+SOURCE=$0
+while [ -h "$SOURCE" ]; do
+  SOURCE_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")" && pwd)
+  LINK_TARGET=$(readlink "$SOURCE")
+  case "$LINK_TARGET" in
+    /*) SOURCE=$LINK_TARGET ;;
+    *) SOURCE=$SOURCE_DIR/$LINK_TARGET ;;
+  esac
+done
+
+SCRIPT_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")" && pwd)
+HUD_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+if [ -d "$HUD_ROOT/package" ]; then
+  DEFAULT_PACKAGE_DIR=$HUD_ROOT/package
+else
+  DEFAULT_PACKAGE_DIR=$HUD_ROOT/dist/package
+fi
+
+PACKAGE_DIR=${CODEX_HUD_PACKAGE_DIR:-$DEFAULT_PACKAGE_DIR}
+CODEX_HUD_BINARY=${CODEX_HUD_BINARY:-$PACKAGE_DIR/bin/codex}
+CODEX_HUD_RENDERER=${CODEX_HUD_RENDERER:-$HUD_ROOT/renderer/statusline.mjs}
+
+if [ ! -x "$CODEX_HUD_BINARY" ]; then
+  echo "codex-hud: patched Codex binary is missing: $CODEX_HUD_BINARY" >&2
+  echo "Run scripts/build.sh and scripts/install.sh from the codex-hud repository." >&2
+  exit 1
+fi
+if [ ! -x "$CODEX_HUD_RENDERER" ]; then
+  echo "codex-hud: renderer is not executable: $CODEX_HUD_RENDERER" >&2
+  exit 1
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "codex-hud: Node.js 18 or newer is required for the default renderer" >&2
+    exit 1
+fi
+NODE_MAJOR=$(node -p "Number(process.versions.node.split('.')[0])")
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  echo "codex-hud: Node.js 18 or newer is required (found $(node --version))" >&2
+  exit 1
+fi
+
+if [ -z "${CODEX_HUD_CONFIG:-}" ]; then
+  USER_CONFIG=${XDG_CONFIG_HOME:-"$HOME/.config"}/codex-hud/config.json
+  if [ -f "$USER_CONFIG" ]; then
+    CODEX_HUD_CONFIG=$USER_CONFIG
+  else
+    CODEX_HUD_CONFIG=$HUD_ROOT/config/config.json
+  fi
+fi
+
+export CODEX_HUD_CONFIG
+export CODEX_CUSTOM_STATUSLINE_COMMAND=$CODEX_HUD_RENDERER
+export CODEX_CUSTOM_STATUSLINE_INTERVAL_MS=${CODEX_CUSTOM_STATUSLINE_INTERVAL_MS:-1000}
+export CODEX_CUSTOM_STATUSLINE_TIMEOUT_MS=${CODEX_CUSTOM_STATUSLINE_TIMEOUT_MS:-350}
+export CODEX_CUSTOM_STATUSLINE_MAX_LINES=${CODEX_CUSTOM_STATUSLINE_MAX_LINES:-6}
+
+exec "$CODEX_HUD_BINARY" "$@"
