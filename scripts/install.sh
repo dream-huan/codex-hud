@@ -149,7 +149,8 @@ else
   download "$DOWNLOAD_ROOT/$ASSET" "$TMP_DIR/$ASSET"
   download "$DOWNLOAD_ROOT/$ASSET.sha256" "$TMP_DIR/$ASSET.sha256"
   (cd "$TMP_DIR" && sha256sum -c "$ASSET.sha256")
-  tar -xzf "$TMP_DIR/$ASSET" -C "$STAGE_DIR"
+  tar --no-same-owner -xzf "$TMP_DIR/$ASSET" -C "$STAGE_DIR"
+  chmod 0755 "$STAGE_DIR"
 fi
 
 for REQUIRED in \
