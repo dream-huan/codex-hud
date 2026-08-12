@@ -48,7 +48,7 @@ cd codex-hud
 安装指定版本：
 
 ```bash
-CODEX_HUD_VERSION=v0.1.0 ./scripts/install.sh
+CODEX_HUD_VERSION=v0.1.1 ./scripts/install.sh
 ```
 
 如果 `~/.local/bin` 不在 `PATH` 中，把下面一行加入 `~/.bashrc` 或 `~/.zshrc`：

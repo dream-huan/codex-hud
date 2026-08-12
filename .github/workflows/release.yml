@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag (for example v0.1.1)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -16,11 +22,14 @@ jobs:
   linux-x86-64:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     steps:
       - name: Check out codex-hud
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_VERSION }}
 
       - name: Reclaim runner disk space
         run: |
@@ -69,16 +78,16 @@ jobs:
 
       - name: Create release archive
         env:
-          CODEX_HUD_VERSION: ${{ github.ref_name }}
+          CODEX_HUD_VERSION: ${{ env.RELEASE_VERSION }}
         run: ./scripts/package-release.sh
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          gh release create "${RELEASE_VERSION}" \
             dist/release/codex-hud-x86_64-unknown-linux-gnu.tar.gz \
             dist/release/codex-hud-x86_64-unknown-linux-gnu.tar.gz.sha256 \
             --verify-tag \
             --generate-notes \
-            --title "codex-hud ${GITHUB_REF_NAME}"
+            --title "codex-hud ${RELEASE_VERSION}"
